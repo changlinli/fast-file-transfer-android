@@ -2,16 +2,16 @@ package com.example.anapp
 
 import android.app.Activity
 import android.content.Intent
-import android.net.Uri
 import android.os.Bundle
-import android.os.Environment
-import android.provider.DocumentsContract
-import android.util.Log
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
-import java.io.File
-import java.io.FileInputStream
+import com.changlinli.raptorq.ImmutableByteArray
+import com.changlinli.raptorq.UdpPacket
 import java.io.FileOutputStream
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.InetSocketAddress
+import java.util.concurrent.Executors
 
 class DisplayMessageActivity : AppCompatActivity() {
     val logTag = this.javaClass.name
@@ -19,7 +19,7 @@ class DisplayMessageActivity : AppCompatActivity() {
     val CREATE_FILE = 1
 
 //    private fun createFile(pickerInitialUri: Uri) {
-    private fun createFile() {
+    private fun openFilePicker() {
         val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
             type = "text/plain"
@@ -48,18 +48,64 @@ class DisplayMessageActivity : AppCompatActivity() {
             this.text = message
         }
 
-        createFile()
+        openFilePicker()
     }
+
+    private val readBuffer = ByteArray(20000)
+
+    private fun mutableBlockingPacketIterator(socket: DatagramSocket): Iterator<DatagramPacket> {
+        val packet = DatagramPacket(readBuffer, readBuffer.size)
+        return object : Iterator<DatagramPacket> {
+            override fun hasNext(): Boolean = true
+
+            override fun next(): DatagramPacket {
+                socket.receive(packet)
+                return packet
+            }
+
+        }
+    }
+
+    private fun <T, S> Iterator<T>.map(f : (T) -> S): Iterator<S> {
+        val originalIterator = this
+
+        return object : Iterator<S> {
+            override fun hasNext(): Boolean = originalIterator.hasNext()
+
+            override fun next(): S = f(originalIterator.next())
+
+        }
+    }
+
+    private fun udpPacketFromDatagramPacket(datagramPacket: DatagramPacket): UdpPacket {
+        return when (val address = datagramPacket.address) {
+            is InetSocketAddress -> UdpPacket(
+                address,
+                ImmutableByteArray.unsafeFromArray(
+                    datagramPacket.data,
+                    datagramPacket.offset,
+                    datagramPacket.length
+                )
+            )
+            else -> TODO()
+        }
+    }
+
+    private val downloadThreadPool = Executors.newFixedThreadPool(1)
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         val contentResolver = applicationContext.contentResolver
+
+        downloadThreadPool.execute{
+
+        }
 
         if (requestCode == CREATE_FILE && resultCode == Activity.RESULT_OK) {
             data?.data?.also{uri ->
                 val fileDescriptor = contentResolver.openFile(uri, "w", null)?.fileDescriptor
                 val fileOutputStream = fileDescriptor?.run{ FileOutputStream(this)}
                 val bytesToWrite = ByteArray(100)
-                bytesToWrite.set(5, 5)
+                bytesToWrite[5] = 5
                 fileOutputStream?.write(bytesToWrite)
                 fileOutputStream?.flush()
                 fileOutputStream?.close()
@@ -69,3 +115,4 @@ class DisplayMessageActivity : AppCompatActivity() {
         }
     }
 }
+
