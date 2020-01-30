@@ -3,14 +3,21 @@ package com.example.anapp
 import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
+import android.util.Log
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
-import com.changlinli.raptorq.ImmutableByteArray
-import com.changlinli.raptorq.UdpPacket
+import com.changlinli.raptorq.*
+import net.fec.openrq.ArrayDataDecoder
+import net.fec.openrq.EncodingPacket
+import net.fec.openrq.OpenRQ
+import net.fec.openrq.decoder.DataDecoder
+import net.fec.openrq.parameters.FECParameters
 import java.io.FileOutputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.util.*
 import java.util.concurrent.Executors
 
 class DisplayMessageActivity : AppCompatActivity() {
@@ -77,6 +84,104 @@ class DisplayMessageActivity : AppCompatActivity() {
         }
     }
 
+    private fun <T> Iterator<T>.tap(f: (T) -> Unit): Iterator<T> {
+        val originalIterator = this
+
+        return object : Iterator<T> {
+            override fun hasNext(): Boolean = originalIterator.hasNext()
+
+            override fun next(): T {
+                val result = originalIterator.next()
+                f(result)
+                return result
+            }
+
+        }
+    }
+
+    private fun <T> Iterator<T>.filter(f : (T) -> Boolean): Iterator<T> {
+        val originalIterator = this
+
+        return object : Iterator<T> {
+            private var nextElement: T? = null
+            // We need this boolean check as well because our Iterator might
+            // have nulls in it itself, which means nextElement being null
+            // is ambiguous as to whether our iterator actually stopped
+            private var stoppedBecauseFilterReturnedTrue = false
+
+            override fun hasNext(): Boolean {
+                var shouldStop = false
+
+                while(!shouldStop) {
+                    if (!originalIterator.hasNext()) {
+                        shouldStop = true
+                    } else {
+                        val nextIteratedElement = originalIterator.next()
+                        nextElement = nextIteratedElement
+                        shouldStop = !f(nextIteratedElement)
+                        stoppedBecauseFilterReturnedTrue = shouldStop
+                    }
+                }
+
+                return nextElement == null && stoppedBecauseFilterReturnedTrue
+            }
+
+            override fun next(): T = if (hasNext()) {
+                // We know that if hasNext() returns true, nextElement must be
+                // non-null, because hasNext puts elements there
+                val result = nextElement!!
+                nextElement = null
+                stoppedBecauseFilterReturnedTrue = false
+                result
+            } else {
+                // TODO: Fix message
+                throw Exception("This iterator has exhausted all its elements!")
+            }
+
+        }
+    }
+
+    private fun <T> Iterator<T>.takeWhile(f : (T) -> Boolean): Iterator<T> {
+        val originalIterator = this
+
+        // Very similar to filter, we just don't reset our variables after calling next
+        return object : Iterator<T> {
+
+            private var nextElement: T? = null
+            // In case our iterator itself has nulls we need to record whether
+            // it was written to since nextElement being null is ambiguous
+            private var nextElementWritten = false
+
+            override fun hasNext(): Boolean =
+                if (originalIterator.hasNext()) {
+                    nextElement = originalIterator.next()
+                    nextElementWritten = true
+                    f(originalIterator.next())
+                } else {
+                    false
+                }
+
+            override fun next(): T = if (hasNext()) {
+                // We know that if hasNext() returns true, nextElement must be
+                // non-null, because hasNext puts elements there
+                nextElement!!
+            } else {
+                // TODO: Fix message
+                throw Exception("This iterator has exhausted all its elements!")
+            }
+
+        }
+    }
+
+    private fun <T, S> Iterator<T>.mapFilterNull(f : (T) -> S?): Iterator<S> {
+        val originalIterator = this
+
+        return originalIterator
+            .map(f)
+            .filter{ it != null }
+            .map{ it!! }
+    }
+
     private fun udpPacketFromDatagramPacket(datagramPacket: DatagramPacket): UdpPacket {
         return when (val address = datagramPacket.address) {
             is InetSocketAddress -> UdpPacket(
@@ -87,16 +192,63 @@ class DisplayMessageActivity : AppCompatActivity() {
                     datagramPacket.length
                 )
             )
-            else -> TODO()
+            else -> {
+                val socketAddress = InetSocketAddress(address, 8012)
+                UdpPacket(
+                    socketAddress,
+                    ImmutableByteArray.unsafeFromArray(
+                        datagramPacket.data,
+                        datagramPacket.offset,
+                        datagramPacket.length
+                    )
+                )
+            }
         }
     }
 
+
     private val downloadThreadPool = Executors.newFixedThreadPool(1)
+
+    private val ClientPort = 8011
+
+
+    fun feedSinglePacket(packet: EncodingPacket, fecParameters: FECParameters, decoder: DataDecoder): Boolean {
+        decoder.sourceBlock(packet.sourceBlockNumber()).putEncodingPacket(packet)
+        return decoder.isDataDecoded
+    }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         val contentResolver = applicationContext.contentResolver
 
+        val defaultFECParameters: FECParameters =
+            FECParameters.newParameters(36510210, 10000, 1)
+
         downloadThreadPool.execute{
+            val decoder: ArrayDataDecoder =
+                OpenRQ.newDecoder(defaultFECParameters, 5)
+            val fecParameters: FECParameters = defaultFECParameters
+            val inetSocketAddress = InetSocketAddress(InetAddress.getByName("10.0.2.2"), 8012)
+
+            val socket = DatagramSocket(ClientPort)
+            val fileDownloadRequest = FileDownloadRequest.createFileRequest(inetSocketAddress, UUID(0, 0))
+            val downloadIterator = mutableBlockingPacketIterator(socket)
+                .map(::udpPacketFromDatagramPacket)
+                .tap{ Log.i(logTag, "Got this packet: $it") }
+                .map(ServerResponse.Companion::decode)
+                .mapFilterNull{ it?.let{ it as? FileFragment }?.toEncodingPacketWithDecoder(decoder) }
+                .map{ feedSinglePacket(it, fecParameters, decoder) }
+                .takeWhile { finishedDecoding -> !finishedDecoding }
+
+            socket.send(fileDownloadRequest.underlyingPacket.toDatagramPacket())
+            Log.d(logTag, "Send filedownload request, which looked like $fileDownloadRequest")
+            var i = 0
+            downloadIterator.forEach{ _ ->
+                Log.i(logTag, "Processed packet: $i")
+                i += 1
+            }
+            val stopRequest = StopDownloadRequest.createStopDownloadRequest(inetSocketAddress, UUID(0, 0))
+            socket.send(stopRequest.underlyingPacket.toDatagramPacket())
+            Log.d(logTag, "We received this many bytes: ${decoder.dataArray().size}")
 
         }
 

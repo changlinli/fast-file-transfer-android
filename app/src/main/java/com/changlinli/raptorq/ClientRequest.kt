@@ -4,23 +4,23 @@ import java.net.InetSocketAddress
 import java.util.*
 
 sealed class ClientRequest {
-    abstract val requestCode: RequestCode
+    abstract val requestType: RequestType
 }
 
 data class FileDownloadRequest(val underlyingPacket: UdpPacket): ClientRequest() {
     // This should be read-only
-    private val rawBytesOfPacket: ByteArray = underlyingPacket.bytes.underlyingArray
+    private val rawBytesOfPacket: ByteArray = underlyingPacket.bytes.unsafeUnderlyingArray
 
     val address: InetSocketAddress = underlyingPacket.address
 
-    override val requestCode: RequestCode
+    override val requestType: RequestType
         get() {
             assert(
-                FileDownloadRequestCode.asByte == rawBytesOfPacket[0]
+                FileDownloadRequestType.asByte == rawBytesOfPacket[0]
             ) {"This is a programmer bug! We created a FileDownloadRequest around a " +
-                    "packet whose first byte does not signal a FileDownloadRequest (${FileDownloadRequestCode.asByte}) (it " +
+                    "packet whose first byte does not signal a FileDownloadRequest (${FileDownloadRequestType.asByte}) (it " +
                     "was instead ${rawBytesOfPacket[0]})"}
-            return FileDownloadRequestCode
+            return FileDownloadRequestType
         }
 
     fun fileUUID(): UUID {
@@ -34,21 +34,46 @@ data class FileDownloadRequest(val underlyingPacket: UdpPacket): ClientRequest()
     override fun toString(): String {
         return "FileDownloadRequest(fileUUID: ${fileUUID()}, address: $address)"
     }
+
+    companion object {
+        fun createFileRequest(remote: InetSocketAddress, fileUUID: UUID): FileDownloadRequest {
+            val sizeOfArray = 1 + 16
+            val underlyingArray = ByteArray(sizeOfArray)
+            val byteBuffer = java.nio.ByteBuffer.wrap(underlyingArray)
+            byteBuffer.put(FileDownloadRequestType.asByte)
+            byteBuffer.putLong(fileUUID.mostSignificantBits)
+            byteBuffer.putLong(fileUUID.leastSignificantBits)
+            val packet = UdpPacket(remote, ImmutableByteArray.unsafeFromArray(underlyingArray))
+            return FileDownloadRequest(packet)
+        }
+    }
 }
 
 data class StopDownloadRequest(val underlyingPacket: UdpPacket): ClientRequest() {
     // This should be read-only
-    private val rawBytesOfPacket: ByteArray = underlyingPacket.bytes.underlyingArray
+    private val rawBytesOfPacket: ByteArray = underlyingPacket.bytes.unsafeUnderlyingArray
 
-    override val requestCode: com.changlinli.raptorq.RequestCode
+    override val requestType: com.changlinli.raptorq.RequestType
         get() {
             assert(
-                FileDownloadRequestCode.asByte == rawBytesOfPacket[0]
+                FileDownloadRequestType.asByte == rawBytesOfPacket[0]
             ) {"This is a programmer bug! We created a StopDownloadRequest around a " +
-                    "packet whose first byte does not signal a StopDownloadRequest (${StopDownloadRequestCode.asByte}) (it " +
+                    "packet whose first byte does not signal a StopDownloadRequest (${StopDownloadRequestType.asByte}) (it " +
                     "was instead ${rawBytesOfPacket[0]})"}
-            return StopDownloadRequestCode
+            return StopDownloadRequestType
         }
 
+    companion object {
+        fun createStopDownloadRequest(remote: InetSocketAddress, fileUUID: UUID): StopDownloadRequest {
+            val arraySize = 1 + 16
+            val underlyingArray = ByteArray(arraySize)
+            val byteBuffer = java.nio.ByteBuffer.wrap(underlyingArray)
+            byteBuffer.put(StopDownloadRequestType.asByte)
+            byteBuffer.putLong(fileUUID.mostSignificantBits)
+            byteBuffer.putLong(fileUUID.leastSignificantBits)
+            val packet = UdpPacket(remote, ImmutableByteArray.unsafeFromArray(underlyingArray))
+            return StopDownloadRequest(packet)
+        }
+    }
 
 }
