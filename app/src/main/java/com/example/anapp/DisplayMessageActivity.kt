@@ -3,10 +3,14 @@ package com.example.anapp
 import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.Message
 import android.util.Log
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import com.changlinli.raptorq.*
+import com.changlinli.raptorq.utils.*
 import net.fec.openrq.ArrayDataDecoder
 import net.fec.openrq.EncodingPacket
 import net.fec.openrq.OpenRQ
@@ -25,6 +29,8 @@ class DisplayMessageActivity : AppCompatActivity() {
 
     val CREATE_FILE = 1
 
+    val currentInstanceOfDisplayMessageActivity = this
+
 //    private fun createFile(pickerInitialUri: Uri) {
     private fun openFilePicker() {
         val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
@@ -39,6 +45,13 @@ class DisplayMessageActivity : AppCompatActivity() {
         startActivityForResult(intent, CREATE_FILE)
     }
 
+    private val handler: Handler = object : Handler(Looper.getMainLooper()) {
+        override fun handleMessage(msg: Message) {
+            val downloadedBytes = msg.obj as ByteArray
+            findViewById<TextView>(R.id.textView).text = "We got this many bytes: ${downloadedBytes.size}"
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_display_message)
@@ -51,7 +64,7 @@ class DisplayMessageActivity : AppCompatActivity() {
 //        message?.apply{ file?.writeText(this) }
 //        Log.i(logTag, file?.absolutePath ?: "null!")
 
-        val textView = findViewById<TextView>(R.id.textView).apply{
+        findViewById<TextView>(R.id.textView).apply{
             this.text = message
         }
 
@@ -71,115 +84,6 @@ class DisplayMessageActivity : AppCompatActivity() {
             }
 
         }
-    }
-
-    private fun <T, S> Iterator<T>.map(f : (T) -> S): Iterator<S> {
-        val originalIterator = this
-
-        return object : Iterator<S> {
-            override fun hasNext(): Boolean = originalIterator.hasNext()
-
-            override fun next(): S = f(originalIterator.next())
-
-        }
-    }
-
-    private fun <T> Iterator<T>.tap(f: (T) -> Unit): Iterator<T> {
-        val originalIterator = this
-
-        return object : Iterator<T> {
-            override fun hasNext(): Boolean = originalIterator.hasNext()
-
-            override fun next(): T {
-                val result = originalIterator.next()
-                f(result)
-                return result
-            }
-
-        }
-    }
-
-    private fun <T> Iterator<T>.filter(f : (T) -> Boolean): Iterator<T> {
-        val originalIterator = this
-
-        return object : Iterator<T> {
-            private var nextElement: T? = null
-            // We need this boolean check as well because our Iterator might
-            // have nulls in it itself, which means nextElement being null
-            // is ambiguous as to whether our iterator actually stopped
-            private var stoppedBecauseFilterReturnedTrue = false
-
-            override fun hasNext(): Boolean {
-                var shouldStop = false
-
-                while(!shouldStop) {
-                    if (!originalIterator.hasNext()) {
-                        shouldStop = true
-                    } else {
-                        val nextIteratedElement = originalIterator.next()
-                        nextElement = nextIteratedElement
-                        shouldStop = !f(nextIteratedElement)
-                        stoppedBecauseFilterReturnedTrue = shouldStop
-                    }
-                }
-
-                return nextElement == null && stoppedBecauseFilterReturnedTrue
-            }
-
-            override fun next(): T = if (hasNext()) {
-                // We know that if hasNext() returns true, nextElement must be
-                // non-null, because hasNext puts elements there
-                val result = nextElement!!
-                nextElement = null
-                stoppedBecauseFilterReturnedTrue = false
-                result
-            } else {
-                // TODO: Fix message
-                throw Exception("This iterator has exhausted all its elements!")
-            }
-
-        }
-    }
-
-    private fun <T> Iterator<T>.takeWhile(f : (T) -> Boolean): Iterator<T> {
-        val originalIterator = this
-
-        // Very similar to filter, we just don't reset our variables after calling next
-        return object : Iterator<T> {
-
-            private var nextElement: T? = null
-            // In case our iterator itself has nulls we need to record whether
-            // it was written to since nextElement being null is ambiguous
-            private var nextElementWritten = false
-
-            override fun hasNext(): Boolean =
-                if (originalIterator.hasNext()) {
-                    nextElement = originalIterator.next()
-                    nextElementWritten = true
-                    f(originalIterator.next())
-                } else {
-                    false
-                }
-
-            override fun next(): T = if (hasNext()) {
-                // We know that if hasNext() returns true, nextElement must be
-                // non-null, because hasNext puts elements there
-                nextElement!!
-            } else {
-                // TODO: Fix message
-                throw Exception("This iterator has exhausted all its elements!")
-            }
-
-        }
-    }
-
-    private fun <T, S> Iterator<T>.mapFilterNull(f : (T) -> S?): Iterator<S> {
-        val originalIterator = this
-
-        return originalIterator
-            .map(f)
-            .filter{ it != null }
-            .map{ it!! }
     }
 
     private fun udpPacketFromDatagramPacket(datagramPacket: DatagramPacket): UdpPacket {
@@ -211,17 +115,34 @@ class DisplayMessageActivity : AppCompatActivity() {
 
     private val ClientPort = 8011
 
+    fun feedSinglePacketDebug(packet: EncodingPacket, fecParameters: FECParameters, decoder: DataDecoder, idx: Int): Boolean =
+        if (idx == 3656) {
+            feedSinglePacket(packet, fecParameters, decoder)
+        } else {
+            feedSinglePacket(packet, fecParameters, decoder)
+        }
 
     fun feedSinglePacket(packet: EncodingPacket, fecParameters: FECParameters, decoder: DataDecoder): Boolean {
-        decoder.sourceBlock(packet.sourceBlockNumber()).putEncodingPacket(packet)
-        return decoder.isDataDecoded
+        if (decoder.isDataDecoded) {
+            return true
+        } else {
+            decoder.sourceBlock(packet.sourceBlockNumber()).putEncodingPacket(packet)
+            return decoder.isDataDecoded
+        }
     }
+
+    val fileInQuestion = UUID(0L, 1L)
+
+    val mappingOfUUIDsToFileSizes = mapOf<UUID, Long>(
+        UUID(0L, 0L) to 36510210,
+        UUID(0L, 1L) to 210124
+    )
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         val contentResolver = applicationContext.contentResolver
 
         val defaultFECParameters: FECParameters =
-            FECParameters.newParameters(36510210, 10000, 1)
+            FECParameters.newParameters(mappingOfUUIDsToFileSizes.get(fileInQuestion)!!, 10000, 1)
 
         downloadThreadPool.execute{
             val decoder: ArrayDataDecoder =
@@ -230,14 +151,19 @@ class DisplayMessageActivity : AppCompatActivity() {
             val inetSocketAddress = InetSocketAddress(InetAddress.getByName("10.0.2.2"), 8012)
 
             val socket = DatagramSocket(ClientPort)
-            val fileDownloadRequest = FileDownloadRequest.createFileRequest(inetSocketAddress, UUID(0, 0))
+            val fileDownloadRequest = FileDownloadRequest.createFileRequest(inetSocketAddress, fileInQuestion)
             val downloadIterator = mutableBlockingPacketIterator(socket)
                 .map(::udpPacketFromDatagramPacket)
                 .tap{ Log.i(logTag, "Got this packet: $it") }
                 .map(ServerResponse.Companion::decode)
+                .tap{ Log.i(logTag, "Finished decoding") }
                 .mapFilterNull{ it?.let{ it as? FileFragment }?.toEncodingPacketWithDecoder(decoder) }
-                .map{ feedSinglePacket(it, fecParameters, decoder) }
+                .tap{ Log.i(logTag, "Created encoding packet") }
+                .zipWithIndex()
+                .map{ feedSinglePacketDebug(it.first, fecParameters, decoder, it.second) }
+                .tap{ Log.i(logTag, "Fed single packet") }
                 .takeWhile { finishedDecoding -> !finishedDecoding }
+                .tap{ Log.i(logTag, "Checked to see if we should end") }
 
             socket.send(fileDownloadRequest.underlyingPacket.toDatagramPacket())
             Log.d(logTag, "Send filedownload request, which looked like $fileDownloadRequest")
@@ -246,9 +172,16 @@ class DisplayMessageActivity : AppCompatActivity() {
                 Log.i(logTag, "Processed packet: $i")
                 i += 1
             }
-            val stopRequest = StopDownloadRequest.createStopDownloadRequest(inetSocketAddress, UUID(0, 0))
+            Log.d(logTag, "Finished processing download iterator")
+            val stopRequest = StopDownloadRequest.createStopDownloadRequest(inetSocketAddress, fileInQuestion)
+            Log.d(logTag, "About to send stop download request: $stopRequest")
             socket.send(stopRequest.underlyingPacket.toDatagramPacket())
-            Log.d(logTag, "We received this many bytes: ${decoder.dataArray().size}")
+            val decodedResult = decoder.dataArray()
+            Log.d(logTag, "We received this many bytes: ${decodedResult.size}")
+            val messgeToSendBackToUIThread = Message()
+            messgeToSendBackToUIThread.obj = decodedResult
+            currentInstanceOfDisplayMessageActivity.handler.sendMessage(messgeToSendBackToUIThread)
+
 
         }
 

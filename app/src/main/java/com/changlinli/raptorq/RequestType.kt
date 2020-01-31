@@ -13,7 +13,7 @@ object FileDownloadRequestType: RequestType() {
 }
 
 object StopDownloadRequestType: RequestType() {
-    override val asByte: Byte = 100
+    override val asByte: Byte = 1
 }
 
 sealed class ResponseType(): MessageType() {
